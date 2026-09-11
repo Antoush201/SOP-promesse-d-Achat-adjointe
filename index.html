@@ -188,7 +188,7 @@
 
   /* ── PDF hidden output ── */
   #pdf-output {
-    position: absolute; left: -9999px; top: 0;
+    position: fixed; left: 0; top: 0; z-index: -9999;
     width: 794px; /* A4 px ~96dpi */
     font-family: 'Inter', system-ui, sans-serif;
     font-size: 12px; line-height: 1.55; color: #111; background: #fff;
@@ -938,7 +938,7 @@
       filename,
       margin: 0,
       image: { type: 'jpeg', quality: 0.98 },
-      html2canvas: { scale: 2, useCORS: true, logging: false },
+      html2canvas: { scale: 2, useCORS: true, logging: false, scrollX: 0, scrollY: 0, windowWidth: 794 },
       jsPDF: { unit: 'px', format: 'a4', orientation: 'portrait', hotfixes: ['px_scaling'] }
     }).from(out).save().then(() => {
       out.innerHTML = '';
