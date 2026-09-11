@@ -931,17 +931,28 @@
 
     const out = document.getElementById('pdf-output');
     out.innerHTML = html;
+    const container = document.querySelector('.container');
 
     const filename = addr.replace(/[^a-zA-Z0-9À-ɏ\s\-]/g, '').trim() + ' — PA.pdf';
+
+    // html2canvas rend un canvas de hauteur 0 si l'élément est hors flux.
+    // On le remet dans le flux (position:static) et on cache l'app le temps
+    // de la capture, puis on restaure tout.
+    function restore() {
+      out.innerHTML = '';
+      out.style.position = 'fixed';
+      if (container) container.style.display = '';
+    }
+
+    if (container) container.style.display = 'none';
+    out.style.position = 'static';
 
     html2pdf().set({
       filename,
       margin: 0,
       image: { type: 'jpeg', quality: 0.98 },
-      html2canvas: { scale: 2, useCORS: true, logging: false, scrollX: 0, scrollY: 0, windowWidth: 794 },
+      html2canvas: { scale: 2, useCORS: true, logging: false },
       jsPDF: { unit: 'px', format: 'a4', orientation: 'portrait', hotfixes: ['px_scaling'] }
-    }).from(out).save().then(() => {
-      out.innerHTML = '';
-    });
+    }).from(out).save().then(restore).catch(restore);
   });
 </script>
