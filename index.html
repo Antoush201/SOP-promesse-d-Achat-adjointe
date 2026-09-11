@@ -666,7 +666,9 @@
 <div id="pdf-output" aria-hidden="true"></div>
 
 <script>
-  const KEY = 'sop-v2';
+  const _params = new URLSearchParams(location.search);
+  const _oppId = _params.get('opportunityId') || _params.get('opp') || 'default';
+  const KEY = 'sop-v2-' + _oppId;
   let data = {};
   try { data = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch(e) {}
   function save() { try { localStorage.setItem(KEY, JSON.stringify(data)); } catch(e) {} }
