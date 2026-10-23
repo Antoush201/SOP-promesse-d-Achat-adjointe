@@ -156,6 +156,7 @@
   .btn-pdf:hover { color: #333; border-color: #bbb; }
   .btn-pdf:focus-visible { outline: 2px solid #111; outline-offset: 2px; }
   .btn-pdf svg { flex-shrink: 0; }
+  .hdr-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 
   /* ── PDF hidden output ── */
   #pdf-output {
@@ -201,10 +202,18 @@
       <h1>SOP — Transactions immobilières</h1>
       <p>Guide de l'adjointe administrative · Promesse d'achat (PA)</p>
     </div>
+    <div class="hdr-actions">
     <button class="btn-pdf" id="btn-pdf" title="Télécharger le dossier en PDF">
       <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 1v7M6.5 8l-2.5-2.5M6.5 8l2.5-2.5M2 11h9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
       PDF
     </button>
+    <button class="btn-pdf" id="btn-backup" title="Télécharger une copie de tous les dossiers de ce navigateur et les envoyer dans la base">
+      <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2 3.5h9v7.5H2zM2 3.5l1.5-2h6l1.5 2M5 6.5h3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Sauvegarde
+    </button>
+    <button class="btn-pdf" id="btn-restore" title="Restaurer depuis un fichier de sauvegarde">Restaurer</button>
+    <input type="file" id="inp-restore" accept=".json,application/json" hidden>
+    </div>
   </header>
 
   <nav class="tabs" role="tablist">
@@ -797,6 +806,94 @@
 
   updateAllCounts();
   loadFromSupabase();
+
+  /* ── Sauvegarde / restauration de tous les dossiers ── */
+  const PREFIX = KEY.slice(0, KEY.length - _oppId.length);
+  function localDossiers() {
+    const out = {};
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || k.indexOf(PREFIX) !== 0 || /:ts$/.test(k)) continue;
+      try {
+        const d = JSON.parse(localStorage.getItem(k) || '{}');
+        if (d && Object.keys(d).length) out[k.slice(PREFIX.length)] = { data: d, ts: parseInt(localStorage.getItem(k + ':ts') || '0', 10) || 0 };
+      } catch(e) {}
+    }
+    return out;
+  }
+  // Même règle que loadFromSupabase : union des champs, la version la plus récente gagne en cas de conflit
+  function unionMerge(a, aTs, b, bTs) {
+    const aWins = aTs >= bTs, m = Object.assign({}, aWins ? b : a, aWins ? a : b);
+    return m;
+  }
+  async function pushAllToSupabase(dossiers) {
+    if (!SB_READY) return 0;
+    let n = 0;
+    for (const id of Object.keys(dossiers)) {
+      try {
+        const h = { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY };
+        const r = await fetch(SB_URL + '/rest/v1/' + SB_TABLE + '?opportunity_id=eq.' + encodeURIComponent(id) + '&select=data,updated_at', { headers: h });
+        if (!r.ok) continue;
+        const rows = await r.json();
+        const remote = (rows[0] && rows[0].data) || {};
+        const remoteTs = rows[0] ? (Date.parse(rows[0].updated_at || '') || 0) : 0;
+        const loc = dossiers[id];
+        const merged = unionMerge(loc.data, loc.ts || Date.now(), remote, remoteTs);
+        if (rows.length && JSON.stringify(merged) === JSON.stringify(remote)) { n++; continue; }
+        const w = await fetch(SB_URL + '/rest/v1/' + SB_TABLE, {
+          method: 'POST',
+          headers: Object.assign({ 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates' }, h),
+          body: JSON.stringify({ opportunity_id: id, data: merged, updated_at: new Date().toISOString() })
+        });
+        if (w.ok) n++;
+      } catch(e) { console.warn('[SOP] Envoi du dossier ' + id + ' échoué', e); }
+    }
+    return n;
+  }
+
+  document.getElementById('btn-backup').addEventListener('click', async () => {
+    const btn = document.getElementById('btn-backup');
+    const dossiers = localDossiers();
+    const ids = Object.keys(dossiers);
+    if (!ids.length) { alert('Aucun dossier enregistré dans ce navigateur.'); return; }
+    const now = new Date();
+    const day = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
+    const blob = new Blob([JSON.stringify({ app: 'pa', prefix: PREFIX, exported_at: now.toISOString(), dossiers: dossiers }, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'sauvegarde-sop-pa-' + day + '.json';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    btn.disabled = true;
+    const n = await pushAllToSupabase(dossiers);
+    btn.disabled = false;
+    alert(ids.length + ' dossier(s) sauvegardé(s) dans le fichier téléchargé.\n' + n + ' / ' + ids.length + ' synchronisé(s) avec la base en ligne.');
+  });
+
+  document.getElementById('btn-restore').addEventListener('click', () => document.getElementById('inp-restore').click());
+  document.getElementById('inp-restore').addEventListener('change', (ev) => {
+    const file = ev.target.files && ev.target.files[0];
+    ev.target.value = '';
+    if (!file) return;
+    file.text().then((txt) => {
+      const backup = JSON.parse(txt);
+      if (!backup || backup.prefix !== PREFIX || !backup.dossiers) throw new Error('mauvais fichier');
+      let n = 0;
+      Object.keys(backup.dossiers).forEach((id) => {
+        const b = backup.dossiers[id] || {};
+        const k = PREFIX + id;
+        let cur = {};
+        try { cur = JSON.parse(localStorage.getItem(k) || '{}'); } catch(e) {}
+        const curTs = parseInt(localStorage.getItem(k + ':ts') || '0', 10) || 0;
+        const merged = unionMerge(cur, curTs, b.data || {}, b.ts || 0);
+        localStorage.setItem(k, JSON.stringify(merged));
+        localStorage.setItem(k + ':ts', String(Math.max(curTs, b.ts || 0) || Date.now()));
+        n++;
+      });
+      alert(n + ' dossier(s) restauré(s). La page va se recharger.');
+      location.reload();
+    }).catch(() => alert("Ce fichier n'est pas une sauvegarde valide de cette app."));
+  });
 
   /* ── PDF Generation ── */
   function v(key) { return (data[key] || '').trim(); }
