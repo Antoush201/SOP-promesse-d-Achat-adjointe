@@ -635,8 +635,10 @@
   try { data = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch(e) {}
 
   let _saveTimer = null;
+  function markLocalTs() { try { localStorage.setItem(KEY + ':ts', String(Date.now())); } catch(e) {} }
   function save() {
     try { localStorage.setItem(KEY, JSON.stringify(data)); } catch(e) {}
+    markLocalTs();
     clearTimeout(_saveTimer);
     _saveTimer = setTimeout(pushToSupabase, 800);
   }
@@ -659,15 +661,36 @@
     if (!SB_READY) return;
     try {
       const r = await fetch(SB_URL + '/rest/v1/' + SB_TABLE +
-        '?opportunity_id=eq.' + encodeURIComponent(_oppId) + '&select=data',
+        '?opportunity_id=eq.' + encodeURIComponent(_oppId) + '&select=data,updated_at',
         { headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY } });
       if (!r.ok) return;
       const rows = await r.json();
-      if (rows && rows.length && rows[0].data) {
-        data = rows[0].data;
-        try { localStorage.setItem(KEY, JSON.stringify(data)); } catch(e) {}
-        hydrateAll();
+      if (!rows || !rows.length) {
+        // Aucune donnée en ligne : on sauvegarde le local comme backup
+        if (Object.keys(data).length) pushToSupabase();
+        return;
       }
+      const remote = rows[0].data || {};
+      const remoteTs = Date.parse(rows[0].updated_at || '') || 0;
+      let localTs = parseInt(localStorage.getItem(KEY + ':ts') || '0', 10) || 0;
+      if (!localTs && Object.keys(data).length) localTs = Date.now(); // local présent mais non horodaté → protégé
+      const localWins = localTs >= remoteTs;
+      // Fusion « union » : ne perd jamais une donnée ; en cas de conflit, la version la plus récente gagne
+      const merged = {}, allKeys = {};
+      Object.keys(remote).forEach(function(k){ allKeys[k] = 1; });
+      Object.keys(data).forEach(function(k){ allKeys[k] = 1; });
+      Object.keys(allKeys).forEach(function(k){
+        const hasL = Object.prototype.hasOwnProperty.call(data, k);
+        const hasR = Object.prototype.hasOwnProperty.call(remote, k);
+        if (hasL && hasR) merged[k] = localWins ? data[k] : remote[k];
+        else if (hasL) merged[k] = data[k];
+        else merged[k] = remote[k];
+      });
+      const changed = JSON.stringify(merged) !== JSON.stringify(remote);
+      data = merged;
+      try { localStorage.setItem(KEY, JSON.stringify(data)); } catch(e) {}
+      hydrateAll();
+      if (changed) pushToSupabase(); // remonter la fusion pour synchroniser la base
     } catch(e) { console.warn('[SOP] Chargement Supabase échoué', e); }
   }
 
